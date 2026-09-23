@@ -429,6 +429,78 @@ func TestBatchMatchesSingleEvaluate(t *testing.T) {
 	}
 }
 
+// TestBatchItemParamIsolation pins the rule that each batch item is decided
+// solely by its own body: omitting curvature_t must never inherit the
+// sampling parameters of an earlier item, regardless of order.
+func TestBatchItemParamIsolation(t *testing.T) {
+	c1, c2 := bowCurve(), sampleCurve()
+	ts1 := []float64{0.25, 0.5, 0.75}
+	ts2 := []float64{0.1, 0.9}
+
+	cases := []struct {
+		name   string
+		curves []map[string]any
+	}{
+		// Minimal reproducer: first item carries curvature_t, second omits it.
+		{
+			name: "carry then omit",
+			curves: []map[string]any{
+				{"id": "a", "points": pts(c1), "curvature_t": ts1},
+				{"id": "b", "points": pts(c2)},
+			},
+		},
+		// Order reversed: the item without parameters comes first.
+		{
+			name: "omit then carry",
+			curves: []map[string]any{
+				{"id": "a", "points": pts(c2)},
+				{"id": "b", "points": pts(c1), "curvature_t": ts1},
+			},
+		},
+		// Another parameterless item inserted between two carrying items.
+		{
+			name: "carry omit carry omit",
+			curves: []map[string]any{
+				{"id": "a", "points": pts(c1), "curvature_t": ts1},
+				{"id": "b", "points": pts(c2)},
+				{"id": "c", "points": pts(c1), "curvature_t": ts2},
+				{"id": "d", "points": pts(c2)},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, data := post(t, "/api/v1/batch", map[string]any{"curves": tc.curves})
+			if status != http.StatusOK {
+				t.Fatalf("batch status = %d: %s", status, data)
+			}
+			resp := decode[api.BatchResponse](t, data)
+			if len(resp.Results) != len(tc.curves) {
+				t.Fatalf("got %d results, want %d", len(resp.Results), len(tc.curves))
+			}
+			for i, item := range tc.curves {
+				_, hasCurv := item["curvature_t"]
+				got := resp.Results[i]
+				if got.ID != item["id"] {
+					t.Fatalf("result %d id = %q, want %q", i, got.ID, item["id"])
+				}
+				if !got.OK {
+					t.Fatalf("item %s should succeed: %+v", got.ID, got.Error)
+				}
+				if hasCurv {
+					if len(got.Curvatures) != len(item["curvature_t"].([]float64)) {
+						t.Fatalf("item %s: got %d curvature values, want %d",
+							got.ID, len(got.Curvatures), len(item["curvature_t"].([]float64)))
+					}
+				} else if got.Curvatures != nil {
+					t.Fatalf("item %s omitted curvature_t but inherited %d values from an earlier item: %+v",
+						got.ID, len(got.Curvatures), got.Curvatures)
+				}
+			}
+		})
+	}
+}
+
 func TestBatchEnvelopeValidation(t *testing.T) {
 	status, data := post(t, "/api/v1/batch", map[string]any{"curves": []any{}})
 	if status != http.StatusBadRequest {
