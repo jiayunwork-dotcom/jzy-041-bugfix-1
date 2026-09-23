@@ -220,20 +220,15 @@ func (s *Server) handleBatch(c *gin.Context) {
 		return
 	}
 	results := make([]BatchItemResult, len(req.Curves))
-	var lastCurvatureT []float64
 	for i, item := range req.Curves {
 		id := item.ID
 		if id == "" {
 			id = strconv.Itoa(i)
 		}
-		ts := item.CurvatureT
-		if len(ts) == 0 {
-			ts = lastCurvatureT
-		} else {
-			lastCurvatureT = ts
-		}
 		res := BatchItemResult{ID: id}
-		resp, verr := s.computeAll(item.Points, item.Tolerance, ts, item.Offset)
+		// Each item is independent: only its own request fields decide what
+		// gets computed. Never carry parameters over from a previous item.
+		resp, verr := s.computeAll(item.Points, item.Tolerance, item.CurvatureT, item.Offset)
 		if verr != nil {
 			res.Error = verr
 		} else {

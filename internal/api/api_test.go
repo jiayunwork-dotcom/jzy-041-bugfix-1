@@ -444,6 +444,69 @@ func TestBatchEnvelopeValidation(t *testing.T) {
 	}
 }
 
+// TestBatchNoParameterLeak guards item independence: a curve without
+// curvature_t (or offset) must never inherit a previous item's parameters,
+// regardless of order or how many bare items sit between parameter-bearing
+// ones.
+func TestBatchNoParameterLeak(t *testing.T) {
+	withParams := map[string]any{
+		"points": pts(bowCurve()), "curvature_t": []float64{0.25, 0.75},
+		"offset": map[string]any{"distance": 0.3, "segments": 8},
+	}
+	bare := func(c bernstein.Curve) map[string]any {
+		return map[string]any{"points": pts(c)}
+	}
+
+	status, data := post(t, "/api/v1/batch", map[string]any{"curves": []map[string]any{
+		withParams,
+		bare(sampleCurve()),
+		bare(lineCurve()),
+		withParams,
+	}})
+	if status != http.StatusOK {
+		t.Fatalf("batch status = %d: %s", status, data)
+	}
+	resp := decode[api.BatchResponse](t, data)
+	if len(resp.Results) != 4 {
+		t.Fatalf("got %d results, want 4", len(resp.Results))
+	}
+	// Items 0 and 3 carried the parameters; 1 and 2 must stay bare even
+	// though a parameter-bearing item precedes them.
+	for i, wantParams := range []bool{true, false, false, true} {
+		r := resp.Results[i]
+		if !r.OK {
+			t.Fatalf("item %d should succeed: %+v", i, r.Error)
+		}
+		if r.ArcLength == nil {
+			t.Fatalf("item %d always gets arc length", i)
+		}
+		if wantParams {
+			if len(r.Curvatures) != 2 || r.Offset == nil {
+				t.Fatalf("item %d should keep its own curvature/offset: %+v", i, r)
+			}
+		} else if r.Curvatures != nil || r.Offset != nil {
+			t.Fatalf("item %d leaked parameters from an earlier item: %+v", i, r)
+		}
+	}
+
+	// Reversed order: the bare item first must stay bare, and the item
+	// carrying parameters still gets exactly what it asked for.
+	status, data = post(t, "/api/v1/batch", map[string]any{"curves": []map[string]any{
+		bare(sampleCurve()),
+		withParams,
+	}})
+	if status != http.StatusOK {
+		t.Fatalf("reversed batch status = %d: %s", status, data)
+	}
+	rev := decode[api.BatchResponse](t, data)
+	if rev.Results[0].Curvatures != nil || rev.Results[0].Offset != nil {
+		t.Fatalf("first bare item should have no curvature/offset: %+v", rev.Results[0])
+	}
+	if len(rev.Results[1].Curvatures) != 2 || rev.Results[1].Offset == nil {
+		t.Fatalf("second item should keep its own parameters: %+v", rev.Results[1])
+	}
+}
+
 // ---- config / status -------------------------------------------------------
 
 func TestConfigEndpoint(t *testing.T) {
